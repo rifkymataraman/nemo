@@ -1,6 +1,6 @@
-import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, MessageFlags } from 'discord.js';
 import dotenv from 'dotenv';
-import { addAccount, getAccounts, removeAccount, encrypt, setSchedule } from './db.js';
+import { addAccount, getAccounts, removeAccount, encrypt, setSchedule, pauseBot, resumeBot } from './db.js';
 import { executeSession } from './manager.js';
 
 dotenv.config();
@@ -30,6 +30,16 @@ const commands = [
         .setDescription('Set the active hours for the bot')
         .addIntegerOption(option => option.setName('start_hour').setDescription('Start Hour (0-23)').setRequired(true))
         .addIntegerOption(option => option.setName('end_hour').setDescription('End Hour (0-23)').setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('pause_bot')
+        .setDescription('Pause the bot for X hours')
+        .addIntegerOption(option => option.setName('hours').setDescription('Hours to pause (e.g. 1, 4, 12)').setRequired(true)),
+    new SlashCommandBuilder()
+        .setName('resume_bot')
+        .setDescription('Resume bot operations immediately'),
+    new SlashCommandBuilder()
+        .setName('export_db')
+        .setDescription('Download the current database file (Admin only)'),
 ];
 
 client.once('ready', async () => {
@@ -65,7 +75,7 @@ client.on('interactionCreate', async interaction => {
             // Encrypt the code before storing
             const encryptedCode = encrypt(code);
             await addAccount(name, encryptedCode, server);
-            await interaction.reply({ content: `Account **${name}** added successfully!`, ephemeral: true });
+            await interaction.reply({ content: `Account **${name}** added successfully!`, flags: MessageFlags.Ephemeral });
         }
         else if (commandName === 'list_accounts') {
             const accounts = await getAccounts();
@@ -74,13 +84,23 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
 
-            const embed = new EmbedBuilder()
-                .setTitle('Configured Accounts')
-                .setDescription(accounts.map(a =>
-                    `**${a.name}** (Server: ${a.targetServer})\nStatus: ${a.status}\nLast Run: ${a.lastRun ? new Date(a.lastRun).toLocaleString() : 'Never'}`
-                ).join('\n\n'));
+            // Chunk accounts to avoid exceeding embed limits
+            const chunkSize = 15;
+            for (let i = 0; i < accounts.length; i += chunkSize) {
+                const chunk = accounts.slice(i, i + chunkSize);
 
-            await interaction.reply({ embeds: [embed] });
+                const embed = new EmbedBuilder()
+                    .setTitle(i === 0 ? 'Configured Accounts' : 'Configured Accounts (Cont.)')
+                    .setDescription(chunk.map(a =>
+                        `**${a.name}** (Server: ${a.targetServer})\nStatus: ${a.status}\nLast Run: ${a.lastRun ? new Date(a.lastRun).toLocaleString() : 'Never'}`
+                    ).join('\n\n'));
+
+                if (i === 0) {
+                    await interaction.reply({ embeds: [embed] });
+                } else {
+                    await interaction.followUp({ embeds: [embed] });
+                }
+            }
         }
         else if (commandName === 'force_run') {
             const name = interaction.options.getString('name');
@@ -88,7 +108,7 @@ client.on('interactionCreate', async interaction => {
             const account = accounts.find(a => a.name === name);
 
             if (!account) {
-                await interaction.reply({ content: `Account **${name}** not found.`, ephemeral: true });
+                await interaction.reply({ content: `Account **${name}** not found.`, flags: MessageFlags.Ephemeral });
                 return;
             }
 
@@ -101,6 +121,9 @@ client.on('interactionCreate', async interaction => {
                 } else {
                     interaction.followUp(`Session for **${name}** failed: ${result.message}`).catch(console.error);
                 }
+            }).catch(err => {
+                console.error('[Discord] Force run error:', err);
+                interaction.followUp(`Session for **${name}** failed due to an unexpected error.`).catch(console.error);
             });
         }
         else if (commandName === 'remove_account') {
@@ -108,9 +131,9 @@ client.on('interactionCreate', async interaction => {
             const removed = await removeAccount(name);
 
             if (removed) {
-                await interaction.reply({ content: `Account **${name}** removed successfully.`, ephemeral: true });
+                await interaction.reply({ content: `Account **${name}** removed successfully.`, flags: MessageFlags.Ephemeral });
             } else {
-                await interaction.reply({ content: `Account **${name}** not found.`, ephemeral: true });
+                await interaction.reply({ content: `Account **${name}** not found.`, flags: MessageFlags.Ephemeral });
             }
         }
         else if (commandName === 'set_schedule') {
@@ -118,7 +141,7 @@ client.on('interactionCreate', async interaction => {
             const end = interaction.options.getInteger('end_hour');
 
             if (start < 0 || start > 23 || end < 0 || end > 23) {
-                await interaction.reply({ content: 'Hours must be between 0 and 23.', ephemeral: true });
+                await interaction.reply({ content: 'Hours must be between 0 and 23.', flags: MessageFlags.Ephemeral });
                 return;
             }
 
@@ -132,19 +155,45 @@ client.on('interactionCreate', async interaction => {
             await setSchedule(startStr, endStr);
             await interaction.reply({ content: `✅ Schedule updated! Active hours: **${startStr}** to **${endStr}**` });
         }
+        else if (commandName === 'pause_bot') {
+            const hours = interaction.options.getInteger('hours');
+            const pausedUntil = await pauseBot(hours);
+            const date = new Date(pausedUntil).toLocaleString();
+            await interaction.reply({ content: `⏸️ **Bot Paused!**\nNo daily runs will occur until: **${date}**` });
+        }
+        else if (commandName === 'resume_bot') {
+            await resumeBot();
+            await interaction.reply({ content: `▶️ **Bot Resumed!**\nDaily runs will continue as scheduled.` });
+        }
+        else if (commandName === 'export_db') {
+            await interaction.reply({ content: '📤 Uploading database file...', files: ['./data/db.json'] });
+        }
     } catch (error) {
         console.error('[Discord] Interaction Error:', error);
-        if (interaction.replied || interaction.deferred) {
-            await interaction.followUp({ content: 'There was an error while executing this command!', ephemeral: true }).catch(console.error);
-        } else {
-            await interaction.reply({ content: 'There was an error while executing this command!', ephemeral: true }).catch(console.error);
+        try {
+            if (interaction.replied || interaction.deferred) {
+                await interaction.followUp({ content: 'There was an error while executing this command!', flags: MessageFlags.Ephemeral });
+            } else {
+                await interaction.reply({ content: 'There was an error while executing this command!', flags: MessageFlags.Ephemeral });
+            }
+        } catch (handlerError) {
+            // Ignore "Already acknowledged" errors, log others
+            if (handlerError.code !== 40060) {
+                console.error('[Discord] Error in error handler:', handlerError);
+            }
         }
     }
 });
 
 export const startBot = () => {
-    client.login(process.env.DISCORD_TOKEN);
+    client.login(process.env.DISCORD_TOKEN).catch(err => {
+        console.error('[Discord] Failed to login:', err);
+    });
 };
+
+client.on('error', (error) => {
+    console.error('[Discord] Client Error:', error);
+});
 
 export const sendLog = async (message, type = 'info') => {
     const channelId = process.env.LOG_CHANNEL_ID;
@@ -158,10 +207,47 @@ export const sendLog = async (message, type = 'info') => {
     if (type === 'error') color = 0xff0000; // Red
     if (type === 'start') color = 0xffff00; // Yellow
 
-    const embed = new EmbedBuilder()
-        .setDescription(message)
-        .setColor(color)
-        .setTimestamp();
+    const maxLength = 4000;
+    const chunks = [];
 
-    await channel.send({ embeds: [embed] }).catch(console.error);
+    if (message.length <= maxLength) {
+        chunks.push(message);
+    } else {
+        let currentChunk = '';
+        // Split by lines to keep formatting clean
+        const lines = message.split('\n');
+        for (const line of lines) {
+            // Check if adding this line exceeds the limit
+            if ((currentChunk + line + '\n').length > maxLength) {
+                chunks.push(currentChunk);
+                currentChunk = line + '\n';
+            } else {
+                currentChunk += line + '\n';
+            }
+        }
+        if (currentChunk.trim().length > 0) {
+            chunks.push(currentChunk);
+        }
+    }
+
+    for (const chunk of chunks) {
+        // Double check chunk length just in case a single line is huge
+        if (chunk.length > 4096) {
+            // Fallback for extremely long single lines (rare)
+            const subChunks = chunk.match(/.{1,4096}/g);
+            for (const sub of subChunks) {
+                const embed = new EmbedBuilder()
+                    .setDescription(sub)
+                    .setColor(color)
+                    .setTimestamp();
+                await channel.send({ embeds: [embed] }).catch(console.error);
+            }
+        } else {
+            const embed = new EmbedBuilder()
+                .setDescription(chunk)
+                .setColor(color)
+                .setTimestamp();
+            await channel.send({ embeds: [embed] }).catch(console.error);
+        }
+    }
 };

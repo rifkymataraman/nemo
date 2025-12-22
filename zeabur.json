@@ -1,4 +1,0 @@
-{
-    "Dockerfile": "Dockerfile",
-    "dockerCompose": "docker-compose.yml"
-}

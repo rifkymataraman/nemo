@@ -2,10 +2,67 @@ import { JSONFilePreset } from 'lowdb/node';
 import CryptoJS from 'crypto-js';
 import dotenv from 'dotenv';
 
+import fs from 'fs';
+
 dotenv.config();
 
-const defaultData = { accounts: [], settings: { scheduleStart: '10:00', scheduleEnd: '20:00' } };
-const db = await JSONFilePreset('db.json', defaultData);
+// Ensure data directory exists
+// Ensure data directory exists
+if (!fs.existsSync('data')) {
+  try {
+    fs.mkdirSync('data', { recursive: true });
+  } catch (err) {
+    console.error('[FATAL] Could not create data directory:', err.message);
+  }
+}
+
+// REMOVED old permission check block as it was somewhat redundant or verbose here, 
+// and we want to keep the db.js clean. The critical part is the initialization above.
+// However, we can keep a smaller check if desired, but the write-on-init by LowDB effectively tests it.
+// If LowDB throws, we know. But let's keep the explicit check for debugging if user asked.
+try {
+  const testFile = 'data/.perm_check';
+  fs.writeFileSync(testFile, 'ok');
+  fs.unlinkSync(testFile);
+  // console.log('[DB] ✅ Write permission confirmed.'); 
+} catch (err) {
+  console.error('[FATAL] ❌ Write Permission Error on "data/" folder!');
+  console.error('The bot cannot save new accounts. Check Zeabur Volume permissions.');
+}
+
+// MIGRATION / INITIALIZATION LOGIC
+// Check if the Persistent DB exists. If not, try to seed it from the deployed 'initial_db.json'
+const DB_PATH = 'data/db.json';
+const SEED_PATH = 'initial_db.json';
+
+let initialData = { accounts: [], settings: { scheduleStart: '22:00', scheduleEnd: '18:00' } };
+
+// Try to load seed data if it exists
+if (fs.existsSync(SEED_PATH)) {
+  try {
+    const seed = JSON.parse(fs.readFileSync(SEED_PATH, 'utf-8'));
+    if (seed && seed.accounts) {
+      console.log(`[DB] Found initial seed data with ${seed.accounts.length} accounts.`);
+      initialData = seed;
+    }
+  } catch (e) {
+    console.error('[DB] Failed to load initial seed data:', e.message);
+  }
+}
+
+// LowDB Setup
+const db = await JSONFilePreset(DB_PATH, initialData);
+
+// Check if we just initialized a fresh DB (empty accounts but we have seed data)
+// Note: JSONFilePreset writes defaultData if file doesn't exist. 
+// If it *did* exist and was empty, we might want to merge. 
+// But simplest is: We provided initialData as default. LowDB used it if file was missing.
+// So we just need to ensure we write it strictly if it was a new creation.
+// Actually, JSONFilePreset automatically saves defaultData if file is missing.
+// So if data/db.json was missing (Volume empty), it is now created with 'initialData'.
+// We are good!
+
+console.log(`[DB] Database loaded. Accounts: ${db.data.accounts.length}`);
 
 const SECRET_KEY = process.env.ENCRYPTION_KEY || 'default_secret_please_change';
 
@@ -105,14 +162,32 @@ export const getAccountDecrypted = async (id) => {
 export const getSchedule = async () => {
   await db.read();
   // Return defaults if not present
-  return db.data.settings || { scheduleStart: '10:00', scheduleEnd: '20:00' };
+  return db.data.settings || { scheduleStart: '22:00', scheduleEnd: '18:00' };
 };
 
 export const setSchedule = async (start, end) => {
   await db.read();
-  db.data.settings = { scheduleStart: start, scheduleEnd: end };
+  const current = db.data.settings || {};
+  db.data.settings = { ...current, scheduleStart: start, scheduleEnd: end };
   await db.write();
   return db.data.settings;
+};
+
+export const pauseBot = async (hours) => {
+  await db.read();
+  const now = new Date();
+  const pausedUntil = new Date(now.getTime() + hours * 60 * 60 * 1000).toISOString();
+  const current = db.data.settings || {};
+  db.data.settings = { ...current, pausedUntil };
+  await db.write();
+  return pausedUntil;
+};
+
+export const resumeBot = async () => {
+  await db.read();
+  const current = db.data.settings || {};
+  db.data.settings = { ...current, pausedUntil: null };
+  await db.write();
 };
 
 // Run migration on module load to fix any existing plain-text codes

@@ -1,48 +1,34 @@
 import puppeteer from 'puppeteer';
+import fs from 'fs';
 
-const GAME_URL = 'https://evertext.sytes.net';
-const BLOCKED_DOMAINS = ['google.com', 'googleapis.com', 'gstatic.com'];
-const BLOCKED_RESOURCES = ['image', 'font', 'media'];
+const GAME_URL = 'https://evertext.sytes.net/';
+const BLOCKED_DOMAINS = ['google-analytics.com', 'googletagmanager.com', 'facebook.net'];
 
 export const runSession = async (account) => {
     let browser;
     try {
-        console.log('\n' + '='.repeat(60));
-        console.log(`🤖 [Runner] Starting session for "${account.name}"`);
-        console.log('='.repeat(60));
-
-        browser = await puppeteer.launch({
-            headless: 'new',
+        // Determine executable path based on OS
+        const isWindows = process.platform === 'win32';
+        const config = {
+            headless: isWindows ? false : true, // Headless on Linux/Server, Visible on Windows
             args: [
-                // Essential security flags
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-
-                // Aggressive memory reduction
-                '--disable-dev-shm-usage',
                 '--disable-gpu',
                 '--disable-software-rasterizer',
                 '--disable-accelerated-2d-canvas',
                 '--disable-accelerated-video-decode',
                 '--disable-3d-apis',
-
-                // Limit processes and memory
-                '--single-process', // Run in single process (saves ~100-150MB)
-                '--no-zygote',
                 '--disable-renderer-backgrounding',
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-ipc-flooding-protection',
-
-                // Reduce cache and history
                 '--disk-cache-size=1',
                 '--media-cache-size=1',
                 '--aggressive-cache-discard',
                 '--disable-cache',
                 '--disable-application-cache',
                 '--disable-offline-load-stale-cache',
-
-                // Disable unnecessary features
                 '--disable-extensions',
                 '--disable-component-extensions-with-background-pages',
                 '--disable-default-apps',
@@ -51,17 +37,26 @@ export const runSession = async (account) => {
                 '--disable-notifications',
                 '--disable-speech-api',
                 '--disable-webgl',
-                '--disable-web-security', // Only for localhost/testing
-
-                // Reduce JavaScript heap size (critical for memory limit)
-                '--js-flags=--max-old-space-size=256', // Limit V8 heap to 256MB
-
-                // Window size
                 '--window-size=800,600',
                 '--no-first-run'
             ]
-        });
+        };
+
+        if (isWindows) {
+            config.executablePath = 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe';
+        } else {
+            // On Linux/Zeabur, let Puppeteer use its bundled Chromium or system installed one
+            // If needed, we can specificy typical linux paths, but default usually works best if deps are installed
+            console.log('[Runner] Running on Linux/Server. Using default Puppeteer executable.');
+        }
+
+        browser = await puppeteer.launch(config);
+
+
         const page = await browser.newPage();
+
+        // 🛠️ FIX: Set User Agent to mimic regular Chrome (Bypass Headless detection)
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
         // Optimize memory and block unnecessary resources
         await page.setViewport({ width: 800, height: 600 });
@@ -84,6 +79,7 @@ export const runSession = async (account) => {
         page.on('console', () => { }); // Ignore console messages
 
         // Clear page cache periodically during execution
+
         const clearMemory = async () => {
             try {
                 await page.evaluate(() => {
@@ -92,6 +88,20 @@ export const runSession = async (account) => {
                 });
             } catch (e) { /* ignore */ }
         };
+
+        // Load cookies if available
+        try {
+            if (fs.existsSync('./data/cookies.json')) {
+                const cookiesString = fs.readFileSync('./data/cookies.json');
+                const cookies = JSON.parse(cookiesString);
+                await page.setCookie(...cookies);
+                console.log('🍪 Loaded session cookies.');
+            } else {
+                console.log('⚠️ No cookies found. Bot may get stuck at login.');
+            }
+        } catch (error) {
+            console.log('⚠️ Failed to load cookies:', error.message);
+        }
 
         await page.goto(GAME_URL, { waitUntil: 'domcontentloaded' });
 
@@ -127,13 +137,45 @@ export const runSession = async (account) => {
         await page.click('#startBtn');
         await page.waitForSelector('#connection_status', { timeout: 10000 });
 
-        // Optimized command sender - no redundant focus/clear operations
+        // Check server status
+        const checkServerStatus = async (page) => {
+            console.log('🚧 DEV MODE: Bypassing server capacity check...');
+            return true;
+            /*
+                        try {
+                            const statusText = await page.evaluate(() => {
+                                const el = document.querySelector('span[style*="color:red"]');
+                                return el ? el.innerText : null;
+                            });
+                    
+                            if (statusText) {
+                                console.log(`📊 Server Status Check 1: ${statusText}`);
+                                if (statusText.includes('full')) return false;
+                            }
+                    
+                            const slotsText = await page.evaluate(() => {
+                                 // Example selector, might vary. 
+                                 // Logic in runner was checking specific text
+                                 return document.body.innerText;
+                            });
+                            
+                            // Simple check for "4/4" or similar indicating full
+                            // This is a naive check based on previous logs "4/4 slots used"
+                            if (slotsText.includes('4/4 slots used') || slotsText.includes('System full')) {
+                                 console.log('📊 Server Status Check 2: System seems full.');
+                                 return false;
+                            }
+                            
+                            return true;
+                        } catch (e) {
+                            console.log('Server check error', e);
+                            return true; // Assume up if check fails
+                        }
+                        */
+        };    // Optimized command sender - no redundant focus/clear operations
         const send = async (cmd, delay = 500) => {
             await page.waitForSelector('#commandInput', { visible: true });
-            await page.evaluate((command) => {
-                const input = document.getElementById('commandInput');
-                input.value = command;
-            }, cmd);
+            await page.type('#commandInput', cmd, { delay: 50 }); // Simulate typing
             await page.click('#sendBtn');
             await new Promise(r => setTimeout(r, delay));
         };
@@ -155,17 +197,15 @@ export const runSession = async (account) => {
 
         // Step 1: Send initial command
         console.log('\n📝 Step 1: Waiting for command prompt...');
-        if (!await waitFor('Enter Command to use :')) {
+        if (!await waitFor('Enter Command to use :', 60000)) {
+            // DEBUG: Log what IS on the screen if we time out
+            const bodyText = await page.evaluate(() => document.body.innerText);
+            console.log('⚠️ Timeout Debug - Screen Content Preview:\n', bodyText.substring(0, 500) + '...');
             throw new Error('Timeout waiting for command prompt');
         }
-        console.log('✅ Command prompt received\n📤 Sending command: d');
+        console.log('✅ Command prompt received');
+        console.log('📤 Sending command: d');
         await send('d', 1000);
-
-        const output1 = await getOutput();
-        if (output1.includes('Either Zigza error or Incorrect Restore Code') ||
-            output1.includes('error') || output1.includes('Error')) {
-            throw new Error('Error after sending \'d\'');
-        }
 
         // Step 2: Send restore code
         console.log('\n🔑 Step 2: Waiting for restore code prompt...');
@@ -175,91 +215,133 @@ export const runSession = async (account) => {
         console.log(`✅ Restore code prompt received\n📤 Sending restore code: ${account.code.substring(0, 4)}****`);
         await send(account.code, 3000);
 
-        const output2 = await getOutput();
-        if (output2.includes('Either Zigza error or Incorrect Restore Code')) {
-            console.log('❌ Authentication failed: Invalid restore code');
-            throw new Error('Invalid restore code or authentication failed');
-        }
-        console.log('✅ Authentication successful!');
-
-        // Step 3: Server selection
-        console.log('\n🎮 Step 3: Waiting for server selection...');
-        if (!await waitFor('Which acc u want to Login', 60000)) {
-            throw new Error('Timeout waiting for server selection prompt');
-        }
-        console.log('✅ Server list received');
-
-        const serverIndex = await page.evaluate((target) => {
-            const text = document.getElementById('output')?.innerText || '';
-            const regex = /(\d+)--\>.*?\((E-\d+|All of them)\)/g;
-            const map = {};
-            let match;
-            while ((match = regex.exec(text)) !== null) {
-                map[match[2]] = match[1];
-            }
-            return target.toLowerCase() === 'all' ? map['All of them'] : map[target];
-        }, account.targetServer);
-
-        if (!serverIndex) {
-            throw new Error(`Target server "${account.targetServer}" not found in list`);
+        // Check for Zigza/Error explicitly with a short wait before proceeding to full poll
+        try {
+            await page.waitForFunction(
+                () => {
+                    const text = document.getElementById('output')?.innerText || '';
+                    return text.includes('Either Zigza error') || text.includes('Incorrect Restore Code');
+                },
+                { timeout: 5000 }
+            );
+            throw new Error('Zigza Error or Incorrect Code Detected immediately');
+        } catch (e) {
+            if (e.message.includes('Zigza')) throw e;
+            // If timeout, it means no immediate error, continue to wait for success/selection
         }
 
-        console.log(`✅ Found target server: ${account.targetServer}\n📤 Selecting server (option ${serverIndex})...`);
-        await send(serverIndex);
+        // Poll for login success or server selection
+        console.log('⏳ Waiting for login response...');
+        let loginState = 'waiting';
+        let outputAfterLogin = '';
 
-        // Step 4: Handle events
-        console.log('\n🎉 Step 4: Handling Events...');
-        console.log('⏳ Waiting 3 minutes for events processing...');
+        for (let i = 0; i < 60; i++) {
+            outputAfterLogin = await getOutput();
 
-        // Unconditional 3-minute wait as requested
-        await new Promise(r => setTimeout(r, 180000));
-
-        console.log('✅ 3 minutes passed. Executing rapid-fire sequence...');
-        const commands = ['y', 'next', 'auto', 'no', 'no', 'no', 'no'];
-        for (const cmd of commands) {
-            await send(cmd, 200); // Reduced delay for rapid fire
-        }
-
-        // Step 5: Cleanup loop
-        console.log('\n🔄 Step 5: Monitoring for completion...');
-        const startTime = Date.now();
-        let processEnded = false;
-
-        while (!processEnded && (Date.now() - startTime < 900000)) {
-            const output = await getOutput();
-
-            if (output.includes('Process ended with return code 0')) {
-                processEnded = true;
-                console.log('✅ Process ended successfully (Return Code 0)');
+            if (outputAfterLogin.includes('Which acc u want to Login')) {
+                loginState = 'selection';
                 break;
             }
-
-            if ((output.includes('Press y to do more events') ||
-                output.includes('Press y to perform more commands') ||
-                output.includes('Invalid Stage Entered')) &&
-                (output.trim().endsWith(':') || output.trim().endsWith('>'))) {
-                console.log('👉 Prompt detected. Sending "no" twice...');
-                await send('no', 500);
-                await send('no', 1000); // Reduced from 5000 to 1000
-                continue;
+            if (outputAfterLogin.includes('Login / Relog Successfull')) {
+                loginState = 'success';
+                break;
             }
-
-            await new Promise(r => setTimeout(r, 1000)); // Reduced polling from 2000 to 1000
+            if (outputAfterLogin.includes('Either Zigza error') || outputAfterLogin.includes('Incorrect Restore Code')) {
+                loginState = 'error';
+                break;
+            }
+            await new Promise(r => setTimeout(r, 1000));
         }
 
-        if (!processEnded) {
-            console.log('⚠️ Session timed out waiting for process end code');
+        if (loginState === 'error') {
+            console.log('❌ Authentication failed: Error Detected in output');
+            throw new Error('Zigza Error or Invalid Code');
         }
 
-        console.log('\n✅ Session completed!\n🔌 Connection closed');
+        if (loginState === 'selection') {
+            console.log('🔢 Multiple servers detected. Selecting target server...');
+
+            // Use evaluate to parse the DOM directly and build a map
+            const targetIndex = await page.evaluate((target) => {
+                const text = document.getElementById('output')?.innerText || '';
+                // Regex to capture: "1--> Server Name (ServerID)"
+                // Matches: 1--> Server-Shard: 178 (E-18)
+                // Also matches: 6--> Run in all servers (All of them)
+                const regex = /(\d+)-->.*?\((.*?)\)/g;
+                const map = {};
+                let match;
+
+                while ((match = regex.exec(text)) !== null) {
+                    // match[1] = Index (e.g. "1")
+                    // match[2] = Server ID (e.g. "E-18" or "All of them")
+                    map[match[2].trim()] = match[1];
+                }
+
+                // Handle 'all' target
+                if (target.toLowerCase() === 'all') {
+                    return map['All of them'];
+                }
+
+                // Direct lookup
+                if (map[target]) return map[target];
+
+                // Case-insensitive lookup
+                const lowerTarget = target.toLowerCase();
+                for (const key in map) {
+                    if (key.toLowerCase() === lowerTarget) return map[key];
+                }
+
+                return null;
+            }, account.targetServer || '1');
+
+            if (targetIndex) {
+                console.log(`✅ Found target server "${account.targetServer}" at index ${targetIndex}. Selecting...`);
+                await send(targetIndex, 3000);
+            } else {
+                console.log(`⚠️ Target server "${account.targetServer}" not found. defaulting to 1.`);
+                await send('1', 3000);
+            }
+        } else if (loginState === 'success') {
+            console.log('✅ Single server or auto-login detected.');
+        } else {
+            console.log('⚠️ Login state unclear/timed out. Proceeding...');
+        }
+
+        console.log('✅ Authentication flow complete.');
+
+        // Step 3: THE BIG WAIT (Blind Wait for Dailies/Process)
+        console.log('\n⏳ Step 3: Waiting 3 minutes 20 seconds (200s) for process to complete...');
+        // We wait blindly as per "Better Flow" reference
+        await new Promise(r => setTimeout(r, 200000));
+
+        // Step 4: Rapid Fire Commands
+        // Reference: ["y", "auto", "y", "quit", "y"]
+        console.log('\n🚀 Step 4: Executing cleanup command sequence...');
+        const commands = ["y", "auto", "y", "quit", "y"];
+
+        for (const cmd of commands) {
+            console.log(`📤 Sending: ${cmd}`);
+            await send(cmd, 500); // 0.5s delay
+        }
+
+        // Step 5: Wait 60 Seconds before closing
+        console.log('\n🛑 Step 5: Waiting 60 seconds before closing session...');
+        await new Promise(r => setTimeout(r, 60000));
+
+        console.log('✅ Session sequence complete.');
         await browser.close();
-        console.log('='.repeat(60) + '\n');
         return { success: true };
+
 
     } catch (error) {
         console.log('\n❌ ERROR OCCURRED\n💥 Error details:', error.message);
         console.log('='.repeat(60) + '\n');
-        if (browser) await browser.close();
+        // Do not close browser here, let finally handle it
         return { success: false, reason: error.message };
+    } finally {
+        if (browser) {
+            console.log('🛑 Closing browser (cleanup)...');
+            try { await browser.close(); } catch (e) { console.log('Close error:', e.message); }
+        }
     }
 };

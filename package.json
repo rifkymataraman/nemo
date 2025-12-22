@@ -17,6 +17,6 @@
     "express": "^5.1.0",
     "lowdb": "^7.0.1",
     "node-cron": "^4.2.1",
-    "puppeteer": "^24.31.0"
+    "puppeteer": "^24.34.0"
   }
 }

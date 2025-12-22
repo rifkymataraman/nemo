@@ -27,12 +27,20 @@ Make sure to set these in Zeabur:
 - `GUILD_ID` - Your Discord server ID (optional, for faster command updates)
 - `ENCRYPTION_KEY` - Secret key for encrypting restore codes
 
-## Database Persistence
+## Database Persistence (CRITICAL)
 
-The `db.json` file stores account data. On Zeabur:
-- Data persists between restarts
-- The migration runs automatically on startup
-- New accounts are encrypted before storage
+The `db.json` file stores account data. By default, Zeabur wipes files when you redeploy.
+**You MUST configure a Volume to save your accounts:**
+
+1. Go to your Zeabur Service settings.
+2. Click on **Volumes**.
+3. Click "Add Volume".
+4. Set the **Mount Path** to: `/app/data`
+   - *Note: This ensures `db.json` is stored safely outside the container.*
+
+Once configured:
+- Data persists between restarts and redeployments.
+- New accounts added via Discord commands will be saved.
 
 ## Deployment Steps
 
